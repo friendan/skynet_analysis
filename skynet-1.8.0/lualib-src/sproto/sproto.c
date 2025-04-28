@@ -14,28 +14,32 @@
 #define SIZEOF_INT32 ((int)sizeof(uint32_t))
 
 struct field {
-	int tag;
-	int type;
-	const char * name;
-	struct sproto_type * st;
-	int key;
-	int map; // interpreted two fields struct as map
-	int extra;
+	int tag;	// 字段的唯一标识ID，用于协议序列化/反序列化时快速定位字段
+	int type;	// 字段数据类型
+	const char * name;			// 字段名称
+	struct sproto_type * st;	// 指向嵌套的sproto_type结构体，用于描述自定义复合类型
+	int key; // 用于标记字段是否为映射（map）的键。当与map字段配合时，表示该字段作为键名
+	int map; // interpreted two fields struct as map 标记两个连续字段是否构成键值对映射。若为1，则当前字段与下一字段会被解析为key-value
+	int extra;	// 扩展标记位，通常用于内部处理特殊数据类型（如固定小数位整数）、二进制字符串
 };
 
 struct sproto_type {
-	const char * name;
-	int n;
-	int base;
-	int maxn;
-	struct field *f;
+	const char * name;	// 类型名称字符串，如协议定义中的.package、.Info等自定义类型名 用于调试和协议匹配时识别类型
+	int n;				// 当前类型包含的字段数量，对应f数组中有效字段的个数
+	int base;			// 基础类型标识，用于区分是否为数组类型（*前缀）。若为SPROTO_TARRAY则表示该类型是数组
+	int maxn;			// 字段的最大标签ID（tag），用于优化序列化时的内存分配。例如字段tag为0/1/3时，maxn为3
+	struct field *f;	// 指向field结构体数组的指针，存储该类型所有字段的详细定义（如tag、数据类型、嵌套类型等）
 };
 
 struct protocol {
-	const char *name;
-	int tag;
-	int confirm;	// confirm == 1 where response nil
-	struct sproto_type * p[2];
+	const char *name;	// 协议名称字符串，如"Login"或"Chat"，用于标识协议用途
+	int tag;			// 协议的唯一标识ID，用于RPC调用时快速匹配协议。例如客户端请求登录时，通过tag值确定调用的是登录协议而非其他协议		
+	int confirm;	// confirm == 1 where response nil 
+					// 标记是否需要服务器返回响应（即使响应为空）。当值为1时，表示客户端必须等待服务器响应；为0时表示单向通知，无需响应3。
+					// 例如心跳协议可能设为0以节省流量
+	struct sproto_type * p[2];	// 包含两个sproto_type指针的数组，分别描述请求和响应的数据结构
+								// p[0]：指向请求参数的类型定义（如.LoginRequest{user:string}）
+								// p[1]：指向响应数据的类型定义（如.LoginResponse{code:integer}）若协议无请求或响应，对应位置为NULL
 };
 
 struct chunk {
@@ -1020,15 +1024,16 @@ sproto_encode(const struct sproto_type *st, void * buffer, int size, sproto_call
 		if (sz < 0)
 			return -1;
 		if (sz > 0) {
+			// 编码标签
 			uint8_t * record;
 			int tag;
 			if (value == 0) {
 				data += sz;
 				size -= sz;
 			}
-			record = header+SIZEOF_HEADER+SIZEOF_FIELD*index;
-			tag = f->tag - lasttag - 1;
-			if (tag > 0) {
+			record = header+SIZEOF_HEADER+SIZEOF_FIELD*index;	// 定位到第N个标签存储地址
+			tag = f->tag - lasttag - 1;	// 和前面一个标签id是否相差1
+			if (tag > 0) { // 大于0说明 标签不连续，此时需要跳过N个标签
 				// skip tag
 				tag = (tag - 1) * 2 + 1;
 				if (tag > 0xffff)
@@ -1039,11 +1044,13 @@ sproto_encode(const struct sproto_type *st, void * buffer, int size, sproto_call
 				record += SIZEOF_FIELD;
 			}
 			++index;
-			record[0] = value & 0xff;
-			record[1] = (value >> 8) & 0xff;
+			record[0] = value & 0xff;			// 小端序：存标签值，低8位
+			record[1] = (value >> 8) & 0xff;	// 小端序: 存标签值，高8位
 			lasttag = f->tag;
 		}
 	}
+
+	// 标签总数(也是按小端序存储)
 	header[0] = index & 0xff;
 	header[1] = (index >> 8) & 0xff;
 
